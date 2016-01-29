@@ -130,8 +130,14 @@
 
   // Opening Delimiter Tokens
   var DELIMS = pyretMode.delimiters.opening.map(getField("string"));
-  // Closing Delimiter Tokents
+  // Closing Delimiter Tokens
   var ENDDELIM = pyretMode.delimiters.closing.map(getField("string"));
+  // Contexts in which function names may be unprefixed
+  var UPFXCONTEXTS = pyretMode.unprefixedContexts;
+  // Make sure everything exists
+  if (!DELIMS || !ENDDELIM || !UPFXCONTEXTS) {
+    throw Error("Pyret Mode missing required exports.");
+  }
   // There should never be duplicates (same string, different type).
   // If so, refactoring will be needed. An assertion of this is done
   // here, but this nonetheless rests on the assumption that it is
@@ -180,6 +186,25 @@
   });
 
   /**
+   * Checks if the given token is a function-name
+   * in an unprefixed function context
+   * @param {token} tok - The token to check
+   * @returns {boolean}
+   */
+  function isUnprefixedFun(tok) {
+    if (!(tok.type === 'function-name'))
+      return false;
+    // We can go ahead and do the chained access
+    // here, since any error along the way should
+    // be fatal anyhow
+    var stack = tok.state.lineState.tokens;
+    if (stack.length === 0)
+      return false;
+    var ctx = stack[stack.length - 1];
+    return (ctx && (UPFXCONTEXTS.indexOf(ctx) !== -1));
+  }
+
+  /**
    * Checks the given text for whether it is an opening keyword
    * (Done textually...assumption is that the text originates from
    * a keyword or builtin token type)
@@ -187,6 +212,10 @@
    * @returns {boolean} Whether the given text is an opening delimiter
    */
   function isOpening(text) {
+    // Special check: in function context
+    if (text.type === 'function-name') {
+      return isUnprefixedFun(text);
+    }
     text = text.string;
     if (DELIMS.indexOf(text) != -1) {
       return true;
@@ -219,12 +248,17 @@
    * Returns whether the given opening and closing tags
    * (textually) match. Undefined behavior if one or both
    * arguments are not valid
-   * @param {string} open - The opening tag to check
-   * @param {string} close - The closing tag to check
+   * @param {token or string} open - The opening tag to check
+   * @param {token or string} close - The closing tag to check
    * @returns {boolean} If the match succeeded
    */
   function keyMatches(open, close) {
-    open = (typeof(open) === 'string') ? open : open.string;
+    if (typeof(open) !== 'string') {
+      if (open.type === 'function-name')
+        open = 'fun';
+      else
+        open = open.string;
+    }
     close = (typeof(close) === 'string') ? close : close.string;
     if (DELIMS.indexOf(open) != -1) {
       return (ENDDELIM.indexOf(close) != -1);
@@ -344,6 +378,42 @@
     ret.current.start = this.current.start;
     ret.current.end   = this.current.end;
     return ret;
+  };
+
+  /**
+   * Checks if the function-name token that this
+   * {@link TokenTape} is currently on is preceded
+   * by dot-separated names. If so, it expands the
+   * current token to include them.
+   */
+  TokenTape.prototype.grabDotted = function() {
+    var cur = this.cur();
+    if (cur.type !== 'function-name') {
+      // Warn, since this shouldn't happen
+      console.warn("Called grabDotted while not on a function name");
+      return;
+    }
+    // Cannot be preceded by anything if we're already at the beginning
+    if (this.current.start === null) return;
+    // Now do the actual checking
+    var lastAdj = cur;
+    function isAdjacent(tok) { return lastAdj.start === tok.end && lastAdj.line === tok.line; }
+    var copy = this.copy();
+    // Just a double check that we actually are not at the beginning
+    if (!copy.prev()){ return; }
+    var next = copy.cur();
+    while (next
+           && (next.type === 'variable'
+               || (next.type === 'builtin' && next.string === '.'))
+           && (isAdjacent(next))) {
+      // next is part of the dotted name
+      lastAdj = next;
+      if (!copy.prev()) break;
+      next = copy.cur();
+    }
+    // Invalid name
+    if (lastAdj.type === 'builtin') return;
+    this.current.start = lastAdj.start;
   };
 
   /**
@@ -505,17 +575,30 @@
     opts = opts || {};
     var tokContents = opts.string || new RegExp(".*");
     var type = opts.type || new RegExp(".*");
-    function matches(tok) {
-      return tok.string.match(tokContents) && tok.type && tok.type.match(type);
-    }
+    var matches = function(tok) {
+      var matchopts = tok.string.match(tokContents)
+          && tok.type
+          && tok.type.match(type);
+      if (!opts.noFastFail && matchopts && tok.type === 'function-name') {
+        if (!isUnprefixedFun(tok))
+          return false;
+        // TODO: Does this need to be called here?
+        this.grabDotted();
+        return true;
+      }
+      return matchopts;
+    };
+    matches = matches.bind(this);
     if (opts.cur) {
       var tok = this.cur();
-      if (matches(tok)) return tok;
+      // Need to call this.cur() again in case
+      // this.grabDotted() was called
+      if (matches(tok)) return this.cur();
     }
     var next;
     while(next = this.next()) {
       var tok = this.cur();
-      if (matches(tok)) return tok;
+      if (matches(tok)) return this.cur();
     }
     return null;
   };
@@ -631,7 +714,7 @@
       subs[parent] = [toAdd];
     }
     for (;;) {
-      var next = nextMatching({type: /builtin|keyword/});
+      var next = nextMatching({type: /builtin|keyword|function-name/});
       // Reached beginning or end of file; no match
       if (!next) return new IterResult(null, failIfNoMatch, kw ? subs[kw] : []);
       // If next is a subkeyword, respond accordingly
@@ -702,7 +785,7 @@
       throw new Error("Non-Subkeyword given to findMatchingParent");
     }
     for (;;) {
-      var prev = this.findPrev({type: /builtin|keyword/});
+      var prev = this.findPrev({type: /builtin|keyword|function-name/});
       if (!prev) return new IterResult(null, true);
       if (skip > 0) { skip--; continue; }
       var prevIsLast = Object.keys(INV_LASTSUBKEYWORDS).indexOf(prev.string) !== -1;
@@ -753,8 +836,8 @@
     // If keyword is at the very beginning of the line,
     // findNext won't match it, so we manually do the first check.
     var openKw = tstream.cur();
-    if (!openKw || !openKw.type || !openKw.type.match(/keyword|builtin/))
-      openKw = tstream.findNext({type: /keyword|builtin/, string: delimrx});
+    if (!openKw || !openKw.type || !openKw.type.match(/keyword|builtin|function-name/))
+      openKw = tstream.findNext({type: /keyword|builtin|function-name/, string: delimrx});
     else // getOpenPos won't line up correctly otherwise
       tstream.next();
     for (;;) {
@@ -763,7 +846,7 @@
         var close = tstream.findMatchingClose(openKw.string);
         return close && close.token && {from: startKw, to: close.token.from};
       }
-      openKw = tstream.findNext({type: /keyword|builtin/, string: delimrx});
+      openKw = tstream.findNext({type: /keyword|builtin|function-name/, string: delimrx});
       if (!openKw || openKw.line !== start.line) return;
     }
   });
@@ -784,6 +867,10 @@
       start = tstream.findAdjacent({type: /keyword|builtin/,
                                     string: /else|where|sharing/,
                                     pos: pos});
+    }
+    if (!start) {
+      tstream = new TokenTape(cm, pos.line, pos.ch, range);
+      
     }
     if (!start || cmp(Pos(start.line, start.start), pos) > 0) return;
     var here = {from: Pos(start.line, start.start), to: Pos(start.line, start.end)};
