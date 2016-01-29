@@ -55,7 +55,7 @@ CodeMirror.defineMode("pyret", function(config, parserConfig) {
                                 SUBKEYWORD : 3,   // Subkeyword (e.g. "else if")
                                 OPEN_CONTD : 4,   // Extension of opening keyword (i.e. function names & ":")
                                 CLOSE_CONTD : 5,  // Extension of closing keyword (UNUSED)
-                                SUB_COTD : 6};    // Extension of subkeyword (i.e. colon after "else if")
+                                SUB_CONTD : 6};    // Extension of subkeyword (i.e. colon after "else if")
   // NOTE: <token>.state.lineState.subkwParent is
   //       defined if and only if
   //       <token>.state.lineState.delimType == pyret_delimiter_type.SUBKEYWORD
@@ -329,7 +329,7 @@ CodeMirror.defineMode("pyret", function(config, parserConfig) {
     var inOpening = ls.delimType === pyret_delimiter_type.OPENING
         || ls.delimType === pyret_delimiter_type.OPEN_COTD;
     var inSubkw = ls.delimType === pyret_delimiter_type.SUBKEYWORD
-        || ls.delimType === pyret_delimiter_type.SUB_COTD;
+        || ls.delimType === pyret_delimiter_type.SUB_CONTD;
     ls.delimType = pyret_delimiter_type.NONE;
     if (firstTokenInLine) {
       ls.nestingsAtLineStart = ls.nestingsAtLineEnd.copy();
@@ -367,7 +367,7 @@ CodeMirror.defineMode("pyret", function(config, parserConfig) {
       if (inOpening)
         ls.delimType = pyret_demiliter_type.OPEN_COTD;
       else if (inSubkw)
-        ls.delimType = pyret_delimiter_type.SUB_COTD;
+        ls.delimType = pyret_delimiter_type.SUB_CONTD;
       if (hasTop(ls.tokens, "WANTCOLON") || hasTop(ls.tokens, "WANTCOLONOREQUAL"))
         ls.tokens.pop();
       else if (hasTop(ls.tokens, "OBJECT") || hasTop(ls.tokens, "SHARED")) {
